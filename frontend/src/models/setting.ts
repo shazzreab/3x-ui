@@ -13,7 +13,7 @@ export class AllSetting {
   pageSize = 25;
   expireDiff = 0;
   trafficDiff = 0;
-  remarkTemplate = '{{INBOUND}}|📊{{TRAFFIC_LEFT}}|⏳{{DAYS_LEFT}}D';
+  remarkTemplate = '{{INBOUND}}-{{EMAIL}}|📊{{TRAFFIC_LEFT}}|⏳{{DAYS_LEFT}}D';
   datepicker: 'gregorian' | 'jalalian' = 'gregorian';
   tgBotEnable = false;
   tgBotToken = '';
@@ -22,6 +22,7 @@ export class AllSetting {
   tgRunTime = '@daily';
   tgBotBackup = false;
   tgCpu = 80;
+  tgMemory = 80;
   tgLang = 'en-US';
   twoFactorEnable = false;
   twoFactorToken = '';
@@ -34,6 +35,8 @@ export class AllSetting {
   subAnnounce = '';
   subEnableRouting = false;
   subRoutingRules = '';
+  subIncyEnableRouting = false;
+  subIncyRoutingRules = '';
   subListen = '';
   subPort = 2096;
   subPath = '/sub/';
@@ -91,6 +94,7 @@ export class AllSetting {
   smtpEncryptionType = 'starttls';
   smtpEnabledEvents = '';
   smtpCpu = 80;
+  smtpMemory = 80;
   hasTgBotToken = false;
   hasTwoFactorToken = false;
   hasLdapPassword = false;

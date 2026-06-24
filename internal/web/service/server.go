@@ -5,11 +5,14 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"mime/multipart"
+	stdnet "net"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,6 +34,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
 
 	"github.com/google/uuid"
+	utls "github.com/refraction-networking/utls"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
@@ -138,6 +142,10 @@ type ServerService struct {
 
 	versionsCacheMu sync.Mutex
 	versionsCache   *cachedXrayVersions
+
+	fail2banMu        sync.Mutex
+	fail2banInstalled bool
+	fail2banCheckedAt time.Time
 }
 
 type cachedXrayVersions struct {
@@ -179,6 +187,53 @@ func (s *ServerService) LastStatus() *Status {
 	s.lastStatusMu.RLock()
 	defer s.lastStatusMu.RUnlock()
 	return s.lastStatus
+}
+
+// Fail2banStatus tells the frontend whether the per-client IP limit can
+// actually be enforced. Enforcement depends on fail2ban, so a limit set
+// without it would silently do nothing.
+type Fail2banStatus struct {
+	Enabled   bool `json:"enabled"`
+	Installed bool `json:"installed"`
+	Usable    bool `json:"usable"`
+	Windows   bool `json:"windows"`
+}
+
+const fail2banInstalledCacheTTL = 30 * time.Second
+
+func (s *ServerService) GetFail2banStatus() Fail2banStatus {
+	enabled := isFail2banEnabled()
+
+	installed := false
+	if enabled {
+		installed = s.isFail2banInstalled()
+	}
+
+	return Fail2banStatus{
+		Enabled:   enabled,
+		Installed: installed,
+		Usable:    enabled && installed,
+		Windows:   runtime.GOOS == "windows",
+	}
+}
+
+func isFail2banEnabled() bool {
+	value, ok := os.LookupEnv("XUI_ENABLE_FAIL2BAN")
+	return !ok || value == "true"
+}
+
+func (s *ServerService) isFail2banInstalled() bool {
+	s.fail2banMu.Lock()
+	defer s.fail2banMu.Unlock()
+
+	if !s.fail2banCheckedAt.IsZero() && time.Since(s.fail2banCheckedAt) < fail2banInstalledCacheTTL {
+		return s.fail2banInstalled
+	}
+
+	err := exec.Command("fail2ban-client", "-h").Run()
+	s.fail2banInstalled = err == nil
+	s.fail2banCheckedAt = time.Now()
+	return s.fail2banInstalled
 }
 
 // RefreshStatus collects a new system snapshot, stores it as LastStatus, and
@@ -318,6 +373,53 @@ func getPublicIP(url string) string {
 	}
 
 	return ipString
+}
+
+var publicIPv4Services = []string{
+	"https://api4.ipify.org",
+	"https://ipv4.icanhazip.com",
+	"https://v4.api.ipinfo.io/ip",
+	"https://ipv4.myexternalip.com/raw",
+	"https://4.ident.me",
+	"https://check-host.net/ip",
+}
+
+var publicIPv6Services = []string{
+	"https://api6.ipify.org",
+	"https://ipv6.icanhazip.com",
+	"https://v6.api.ipinfo.io/ip",
+	"https://ipv6.myexternalip.com/raw",
+	"https://6.ident.me",
+}
+
+// resolvePublicIPs caches the public IPv4/IPv6 addresses on first use. Guarded
+// by s.mu because the bot's ServerService may call it from sendBackup while a
+// status report runs concurrently.
+func (s *ServerService) resolvePublicIPs() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cachedIPv4 == "" {
+		for _, ip4Service := range publicIPv4Services {
+			s.cachedIPv4 = getPublicIP(ip4Service)
+			if s.cachedIPv4 != "N/A" {
+				break
+			}
+		}
+	}
+
+	if s.cachedIPv6 == "" && !s.noIPv6 {
+		for _, ip6Service := range publicIPv6Services {
+			s.cachedIPv6 = getPublicIP(ip6Service)
+			if s.cachedIPv6 != "N/A" {
+				break
+			}
+		}
+	}
+
+	if s.cachedIPv6 == "N/A" {
+		s.noIPv6 = true
+	}
 }
 
 func (s *ServerService) GetStatus(lastStatus *Status) *Status {
@@ -481,45 +583,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 		logger.Warning("get udp connections failed:", err)
 	}
 
-	// IP fetching with caching
-	showIp4ServiceLists := []string{
-		"https://api4.ipify.org",
-		"https://ipv4.icanhazip.com",
-		"https://v4.api.ipinfo.io/ip",
-		"https://ipv4.myexternalip.com/raw",
-		"https://4.ident.me",
-		"https://check-host.net/ip",
-	}
-	showIp6ServiceLists := []string{
-		"https://api6.ipify.org",
-		"https://ipv6.icanhazip.com",
-		"https://v6.api.ipinfo.io/ip",
-		"https://ipv6.myexternalip.com/raw",
-		"https://6.ident.me",
-	}
-
-	if s.cachedIPv4 == "" {
-		for _, ip4Service := range showIp4ServiceLists {
-			s.cachedIPv4 = getPublicIP(ip4Service)
-			if s.cachedIPv4 != "N/A" {
-				break
-			}
-		}
-	}
-
-	if s.cachedIPv6 == "" && !s.noIPv6 {
-		for _, ip6Service := range showIp6ServiceLists {
-			s.cachedIPv6 = getPublicIP(ip6Service)
-			if s.cachedIPv6 != "N/A" {
-				break
-			}
-		}
-	}
-
-	if s.cachedIPv6 == "N/A" {
-		s.noIPv6 = true
-	}
-
+	s.resolvePublicIPs()
 	status.PublicIP.IPv4 = s.cachedIPv4
 	status.PublicIP.IPv6 = s.cachedIPv6
 
@@ -881,7 +945,7 @@ func (s *ServerService) fetchXrayDigestSHA256(client *http.Client, dgstURL strin
 // parseXrayDigestSHA256 extracts the lowercase SHA2-256 hex from an XTLS .dgst
 // file, whose lines are "ALGO= <hex>" (the relevant one being "SHA2-256= ...").
 func parseXrayDigestSHA256(dgst []byte) (string, error) {
-	for _, line := range strings.Split(string(dgst), "\n") {
+	for line := range strings.SplitSeq(string(dgst), "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "SHA2-256=")
 		if !ok {
 			continue
@@ -1223,6 +1287,69 @@ func (s *ServerService) GetDb() ([]byte, error) {
 	}
 
 	return fileContents, nil
+}
+
+// BackupFilename returns the filename for a database backup, named after the
+// panel's address so a downloaded or Telegram-sent backup identifies the server
+// it came from. requestHost is the browser's address: the getDb handler passes
+// c.Request.Host so a panel download is named after whatever address the user
+// reached the panel with, no Listen Domain needed. The Telegram bot has no
+// request and passes "", falling back to the configured Listen Domain (webDomain)
+// and then the public IP. The extension is .dump on PostgreSQL and .db on SQLite;
+// the base falls back to "x-ui" when no address is known.
+func (s *ServerService) BackupFilename(requestHost string) string {
+	ext := ".db"
+	if database.IsPostgres() {
+		ext = ".dump"
+	}
+	return s.backupHost(requestHost) + ext
+}
+
+// backupHost picks the address used to name backup files: the browser's request
+// host (port stripped) when available, otherwise the configured Listen Domain
+// (webDomain) and then the resolved public IP (IPv4 before IPv6), reduced to safe
+// filename characters. The public IP is resolved directly rather than read from
+// LastStatus so callers whose ServerService never runs the status ticker —
+// notably the Telegram bot — still get a real address instead of the "x-ui"
+// fallback.
+func (s *ServerService) backupHost(requestHost string) string {
+	host := extractHostname(strings.TrimSpace(requestHost))
+	if host == "" {
+		if domain, err := s.settingService.GetWebDomain(); err == nil {
+			host = strings.TrimSpace(domain)
+		}
+	}
+	if host == "" {
+		s.resolvePublicIPs()
+		if ip := s.cachedIPv4; ip != "" && ip != "N/A" {
+			host = ip
+		} else if ip := s.cachedIPv6; ip != "" && ip != "N/A" {
+			host = ip
+		}
+	}
+	return sanitizeBackupHost(host)
+}
+
+// sanitizeBackupHost reduces a host to characters safe in a download filename
+// (the getDb handler enforces ^[a-zA-Z0-9_\-.]+$). IPv6 brackets are stripped
+// and any other character — such as the colons in an IPv6 address — becomes a
+// hyphen. Returns "x-ui" when nothing usable remains.
+func sanitizeBackupHost(host string) string {
+	host = strings.Trim(host, "[]")
+	var b strings.Builder
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), ".-")
+	if out == "" {
+		return "x-ui"
+	}
+	return out
 }
 
 // GetMigration produces a cross-engine migration file plus its filename: on a
@@ -1722,6 +1849,184 @@ func (s *ServerService) GetNewmldsa65() (any, error) {
 	}
 
 	return keyPair, nil
+}
+
+// GetCertHash parses a certificate (from a file path or inline PEM/DER content)
+// and returns the hex-encoded SHA-256 over each certificate's raw DER — the
+// value xray-core's pinnedPeerCertSha256 (pcs) expects. Lets the panel fill the
+// pinned-cert field from the inbound's own certificate without the user
+// computing the hash by hand.
+func (s *ServerService) GetCertHash(certFile string, certContent string) ([]string, error) {
+	var certBytes []byte
+	if path := strings.TrimSpace(certFile); path != "" {
+		// Guard against path traversal: only hash certificate files the panel
+		// already references in its own configuration (an inbound's TLS
+		// certificateFile or the panel's own web cert). The path handed to
+		// os.ReadFile comes from that allow-list, never directly from the
+		// caller-supplied value.
+		known, ok := s.resolveKnownCertFile(path)
+		if !ok {
+			return nil, common.NewError("certificate file is not referenced by any inbound or panel setting")
+		}
+		b, err := os.ReadFile(known)
+		if err != nil {
+			return nil, err
+		}
+		certBytes = b
+	} else if strings.TrimSpace(certContent) != "" {
+		certBytes = []byte(certContent)
+	} else {
+		return nil, common.NewError("no certificate provided")
+	}
+
+	var certs []*x509.Certificate
+	if bytes.Contains(certBytes, []byte("BEGIN")) {
+		rest := certBytes
+		for {
+			block, remain := pem.Decode(rest)
+			if block == nil {
+				break
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return nil, common.NewError("unable to decode certificate: ", err)
+			}
+			certs = append(certs, cert)
+			rest = remain
+		}
+	} else {
+		parsed, err := x509.ParseCertificates(certBytes)
+		if err != nil {
+			return nil, common.NewError("unable to parse certificates: ", err)
+		}
+		certs = parsed
+	}
+
+	if len(certs) == 0 {
+		return nil, common.NewError("no certificates found")
+	}
+
+	hashes := make([]string, 0, len(certs))
+	for _, cert := range certs {
+		sum := sha256.Sum256(cert.Raw)
+		hashes = append(hashes, hex.EncodeToString(sum[:]))
+	}
+	return hashes, nil
+}
+
+// resolveKnownCertFile checks the caller-supplied certificate path against the
+// set of certificate files the panel already references (inbound TLS configs
+// plus the panel's own web cert) and, on a match, returns the path taken from
+// that configuration — not the caller's value. This both confines reads to
+// known certificates and breaks the user-input-to-filesystem taint flow.
+func (s *ServerService) resolveKnownCertFile(certFile string) (string, bool) {
+	want := filepath.Clean(certFile)
+	for _, known := range s.knownCertFiles() {
+		if filepath.Clean(known) == want {
+			return known, true
+		}
+	}
+	return "", false
+}
+
+// knownCertFiles collects every certificate file path the panel legitimately
+// references: the certificateFile of each inbound's TLS settings and the
+// panel's own web TLS certificate.
+func (s *ServerService) knownCertFiles() []string {
+	var files []string
+	if cert, err := s.settingService.GetCertFile(); err == nil {
+		if cert = strings.TrimSpace(cert); cert != "" {
+			files = append(files, cert)
+		}
+	}
+	if inbounds, err := s.inboundService.GetAllInbounds(); err == nil {
+		for _, inbound := range inbounds {
+			files = collectCertFiles(inbound.StreamSettings, files)
+		}
+	}
+	return files
+}
+
+// collectCertFiles walks a stream-settings JSON document and appends the value
+// of every "certificateFile" field it finds (TLS settings may nest them under
+// several keys depending on the security type).
+func collectCertFiles(streamSettings string, out []string) []string {
+	streamSettings = strings.TrimSpace(streamSettings)
+	if streamSettings == "" {
+		return out
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(streamSettings), &parsed); err != nil {
+		return out
+	}
+	return walkCertFiles(parsed, out)
+}
+
+func walkCertFiles(node any, out []string) []string {
+	switch v := node.(type) {
+	case map[string]any:
+		for key, val := range v {
+			if key == "certificateFile" {
+				if path, ok := val.(string); ok {
+					if path = strings.TrimSpace(path); path != "" {
+						out = append(out, path)
+					}
+				}
+			}
+			out = walkCertFiles(val, out)
+		}
+	case []any:
+		for _, item := range v {
+			out = walkCertFiles(item, out)
+		}
+	}
+	return out
+}
+
+// GetRemoteCertHash opens a uTLS (Chrome fingerprint) handshake to a remote
+// endpoint and returns the hex-encoded SHA-256 of its leaf certificate — the
+// value to put in pinnedPeerCertSha256 (pcs) when pinning a server whose
+// certificate file you don't hold (a CDN front, a REALITY dest, an external
+// proxy). A native handshake replaces the old `xray tls ping` subprocess so the
+// real dial/handshake failure (connection refused, timeout, …) surfaces
+// verbatim. `server` may be host or host:port; the port defaults to 443.
+func (s *ServerService) GetRemoteCertHash(server string) ([]string, error) {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return nil, common.NewError("no server provided")
+	}
+
+	host, port := server, "443"
+	if h, p, err := stdnet.SplitHostPort(server); err == nil {
+		host, port = h, p
+	}
+
+	dialer := stdnet.Dialer{Timeout: 10 * time.Second}
+	tcpConn, err := dialer.Dial("tcp", stdnet.JoinHostPort(host, port))
+	if err != nil {
+		return nil, common.NewErrorf("failed to dial %s: %s", stdnet.JoinHostPort(host, port), err)
+	}
+	defer tcpConn.Close()
+	_ = tcpConn.SetDeadline(time.Now().Add(15 * time.Second))
+
+	tlsConn := utls.UClient(tcpConn, &utls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h2", "http/1.1"},
+	}, utls.HelloChrome_Auto)
+	defer tlsConn.Close()
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, common.NewErrorf("tls handshake with %s failed: %s", host, err)
+	}
+
+	certs := tlsConn.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil, common.NewError("no certificate returned by ", host)
+	}
+	// PeerCertificates[0] is always the leaf the connection verifies against —
+	// robust for IP-only self-signed certs that carry no DNS SANs.
+	sum := sha256.Sum256(certs[0].Raw)
+	return []string{hex.EncodeToString(sum[:])}, nil
 }
 
 func (s *ServerService) GetNewEchCert(sni string) (any, error) {

@@ -134,6 +134,12 @@ export const SCHEMAS: Record<string, unknown> = {
         "description": "SMTP server host",
         "type": "string"
       },
+      "smtpMemory": {
+        "description": "Memory threshold for email notifications",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
       "smtpPassword": {
         "description": "SMTP password",
         "type": "string"
@@ -199,6 +205,14 @@ export const SCHEMAS: Record<string, unknown> = {
       "subHideSettings": {
         "description": "Hide server settings in happ subscription (Only for Happ)",
         "type": "boolean"
+      },
+      "subIncyEnableRouting": {
+        "description": "Enable routing injection for the Incy client",
+        "type": "boolean"
+      },
+      "subIncyRoutingRules": {
+        "description": "Incy routing deep-link injected into the subscription body (Only for Incy)",
+        "type": "string"
       },
       "subJsonEnable": {
         "description": "Enable JSON subscription endpoint",
@@ -309,6 +323,12 @@ export const SCHEMAS: Record<string, unknown> = {
         "description": "Telegram bot language",
         "type": "string"
       },
+      "tgMemory": {
+        "description": "Memory usage threshold for alerts (percent)",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
       "tgRunTime": {
         "description": "Cron schedule for Telegram notifications",
         "type": "string"
@@ -402,6 +422,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "smtpEnabledEvents",
       "smtpEncryptionType",
       "smtpHost",
+      "smtpMemory",
       "smtpPassword",
       "smtpPort",
       "smtpTo",
@@ -418,6 +439,8 @@ export const SCHEMAS: Record<string, unknown> = {
       "subEnableRouting",
       "subEncrypt",
       "subHideSettings",
+      "subIncyEnableRouting",
+      "subIncyRoutingRules",
       "subJsonEnable",
       "subJsonFinalMask",
       "subJsonMux",
@@ -444,6 +467,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "tgCpu",
       "tgEnabledEvents",
       "tgLang",
+      "tgMemory",
       "tgRunTime",
       "timeLocation",
       "trafficDiff",
@@ -615,6 +639,12 @@ export const SCHEMAS: Record<string, unknown> = {
         "description": "SMTP server host",
         "type": "string"
       },
+      "smtpMemory": {
+        "description": "Memory threshold for email notifications",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
       "smtpPassword": {
         "description": "SMTP password",
         "type": "string"
@@ -680,6 +710,14 @@ export const SCHEMAS: Record<string, unknown> = {
       "subHideSettings": {
         "description": "Hide server settings in happ subscription (Only for Happ)",
         "type": "boolean"
+      },
+      "subIncyEnableRouting": {
+        "description": "Enable routing injection for the Incy client",
+        "type": "boolean"
+      },
+      "subIncyRoutingRules": {
+        "description": "Incy routing deep-link injected into the subscription body (Only for Incy)",
+        "type": "string"
       },
       "subJsonEnable": {
         "description": "Enable JSON subscription endpoint",
@@ -790,6 +828,12 @@ export const SCHEMAS: Record<string, unknown> = {
         "description": "Telegram bot language",
         "type": "string"
       },
+      "tgMemory": {
+        "description": "Memory usage threshold for alerts (percent)",
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
       "tgRunTime": {
         "description": "Cron schedule for Telegram notifications",
         "type": "string"
@@ -890,6 +934,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "smtpEnabledEvents",
       "smtpEncryptionType",
       "smtpHost",
+      "smtpMemory",
       "smtpPassword",
       "smtpPort",
       "smtpTo",
@@ -906,6 +951,8 @@ export const SCHEMAS: Record<string, unknown> = {
       "subEnableRouting",
       "subEncrypt",
       "subHideSettings",
+      "subIncyEnableRouting",
+      "subIncyRoutingRules",
       "subJsonEnable",
       "subJsonFinalMask",
       "subJsonMux",
@@ -932,6 +979,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "tgCpu",
       "tgEnabledEvents",
       "tgLang",
+      "tgMemory",
       "tgRunTime",
       "timeLocation",
       "trafficDiff",
@@ -1448,7 +1496,7 @@ export const SCHEMAS: Record<string, unknown> = {
         "type": "integer"
       },
       "verifyPeerCertByName": {
-        "type": "boolean"
+        "type": "string"
       },
       "vlessRoute": {
         "description": "VlessRoute is a free-form port/range routing spec (e.g. \"53,443,1000-2000\");\nstored verbatim, format-validated on the frontend.",
@@ -1772,6 +1820,10 @@ export const SCHEMAS: Record<string, unknown> = {
   "Node": {
     "description": "Node represents a remote 3x-ui panel registered with the central panel.\nThe central panel polls each node's existing /panel/api/server/status\nendpoint over HTTP using the per-node ApiToken to populate the runtime\nstatus fields below.",
     "properties": {
+      "activeCount": {
+        "example": 23,
+        "type": "integer"
+      },
       "address": {
         "example": "node1.example.com",
         "type": "string"
@@ -1807,6 +1859,10 @@ export const SCHEMAS: Record<string, unknown> = {
       },
       "depletedCount": {
         "example": 1,
+        "type": "integer"
+      },
+      "disabledCount": {
+        "example": 3,
         "type": "integer"
       },
       "enable": {
@@ -1939,6 +1995,7 @@ export const SCHEMAS: Record<string, unknown> = {
       }
     },
     "required": [
+      "activeCount",
       "address",
       "allowPrivateAddress",
       "apiToken",
@@ -1949,6 +2006,7 @@ export const SCHEMAS: Record<string, unknown> = {
       "cpuPct",
       "createdAt",
       "depletedCount",
+      "disabledCount",
       "enable",
       "guid",
       "id",
